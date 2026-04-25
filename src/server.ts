@@ -14,15 +14,36 @@ import { LinkStore } from "./backend/storage.js";
 import { verifyPasscode } from "./backend/crypto.js";
 import { loadConfig, type AppConfig } from "./config.js";
 import {
+  BuildIpsBundleInput,
+  BuildMegaBundleInput,
   CreateSmartHealthLinkInput,
+  ExtractFhirInput,
   GetSmartHealthLinkStatusInput,
+  IngestDocumentsInput,
+  RenderClinicalSummaryPdfInput,
+  RenderInsuranceCardPdfInput,
+  RenderIpsNarrativePdfInput,
   RenderQrCodeInput,
+  RenderTimelinePdfInput,
   RevokeSmartHealthLinkInput,
 } from "./schemas/toolSchemas.js";
 import { createSmartHealthLink } from "./tools/createSmartHealthLink.js";
 import { getSmartHealthLinkStatus } from "./tools/getSmartHealthLinkStatus.js";
 import { renderQrCode } from "./tools/renderQrCode.js";
 import { revokeSmartHealthLink } from "./tools/revokeSmartHealthLink.js";
+import { buildIpsBundle, type FhirBundle } from "./health/ips.js";
+import { buildMegaBundle } from "./health/megaBundle.js";
+import {
+  extractFhir as extractFhirFn,
+  ingestDocument,
+  type IngestedDocument,
+} from "./health/ingest.js";
+import {
+  renderClinicalSummaryPdf,
+  renderInsuranceCardPdf,
+  renderIpsNarrativePdf,
+  renderTimelinePdf,
+} from "./health/render.js";
 
 export interface ServerBundle {
   app: Express;
@@ -69,17 +90,22 @@ export function buildMcpServer(deps: { store: LinkStore; config: AppConfig }): S
     { capabilities: { tools: {} } },
   );
 
+  // Document cache so extract_fhir can refer to a previously ingested document by ID.
+  const docCache = new Map<string, IngestedDocument>();
+
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
+      // --- SHL share-link layer ---
       {
         name: "create_smart_health_link",
         description:
-          "Create a SMART Health Link (shlink:/ URI) for a FHIR Bundle, IPS, medication list, visit summary, or insurance card. Supports expiration and optional passcode.",
+          "Create a SMART Health Link (shlink:/ URI) for a FHIR Bundle, IPS, medication list, visit summary, or insurance card. Supports expiration, viewer wrapping, and optional passcode.",
         inputSchema: zodToJsonSchema(CreateSmartHealthLinkInput as unknown as z.ZodType),
       },
       {
         name: "render_qr_code",
-        description: "Render a SMART Health Link URI as a QR code (SVG and PNG).",
+        description:
+          "Render a SMART Health Link URI as a QR code (SVG and PNG). 'universal' style works for phone cameras AND SHL scanners.",
         inputSchema: zodToJsonSchema(RenderQrCodeInput),
       },
       {
@@ -92,6 +118,55 @@ export function buildMcpServer(deps: { store: LinkStore; config: AppConfig }): S
         description:
           "Return the status of a SMART Health Link (active, expired, revoked) and access metadata.",
         inputSchema: zodToJsonSchema(GetSmartHealthLinkStatusInput),
+      },
+      // --- Health pipeline ---
+      {
+        name: "ingest_documents",
+        description:
+          "Classify and parse one or more uploaded files (FHIR JSON, SHL JWE, PDF, CCDA, plain JSON). Returns document IDs + parsed content (per-page text for PDFs). Use before extract_fhir.",
+        inputSchema: zodToJsonSchema(IngestDocumentsInput as unknown as z.ZodType),
+      },
+      {
+        name: "extract_fhir",
+        description:
+          "Return the parsed content of a previously ingested document with a layout hint and a 'next' suggestion. Designed for LLM-in-the-loop structured extraction (you read the text, you call build_ips_bundle).",
+        inputSchema: zodToJsonSchema(ExtractFhirInput),
+      },
+      {
+        name: "build_ips_bundle",
+        description:
+          "Build a conformant IPS FHIR R4 Bundle from structured patient/conditions/medications/allergies/etc. Handles dedupe, RxNorm/SNOMED/CVX codings, the 'no known allergies' convention, and Composition section assembly (LOINC 60591-5).",
+        inputSchema: zodToJsonSchema(BuildIpsBundleInput as unknown as z.ZodType),
+      },
+      {
+        name: "render_clinical_summary_pdf",
+        description:
+          "Render a Dr-Rider-style ~3-page clinical summary PDF: one-liner, history, current regimen table, prior therapies, active issues, assessment. Returns PDF as base64.",
+        inputSchema: zodToJsonSchema(RenderClinicalSummaryPdfInput as unknown as z.ZodType),
+      },
+      {
+        name: "render_timeline_pdf",
+        description:
+          "Render a reverse-chronological timeline PDF, grouped by month, 3-column (date | event | notes). Returns PDF as base64.",
+        inputSchema: zodToJsonSchema(RenderTimelinePdfInput as unknown as z.ZodType),
+      },
+      {
+        name: "render_ips_narrative_pdf",
+        description:
+          "Render an IPS Bundle's Composition into a single-column narrative PDF (one section per heading). Returns PDF as base64.",
+        inputSchema: zodToJsonSchema(RenderIpsNarrativePdfInput),
+      },
+      {
+        name: "render_insurance_card_pdf",
+        description:
+          "Render a wallet-card-style insurance card PDF (front + back). Returns PDF as base64.",
+        inputSchema: zodToJsonSchema(RenderInsuranceCardPdfInput as unknown as z.ZodType),
+      },
+      {
+        name: "build_mega_bundle",
+        description:
+          "Combine an IPS Bundle with priority inline DocumentReferences (base64 PDFs), archive URL DocumentReferences, and optional insurance Coverage resources. Strips inline base64 from any DocumentReferences already in the IPS bundle to keep size manageable.",
+        inputSchema: zodToJsonSchema(BuildMegaBundleInput as unknown as z.ZodType),
       },
     ],
   }));
@@ -135,6 +210,70 @@ export function buildMcpServer(deps: { store: LinkStore; config: AppConfig }): S
         case "get_smart_health_link_status": {
           const result = getSmartHealthLinkStatus(args, deps.store);
           return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        }
+        case "ingest_documents": {
+          const parsed = IngestDocumentsInput.parse(args);
+          const docs = await Promise.all(parsed.files.map((f) => ingestDocument(f)));
+          for (const d of docs) docCache.set(d.id, d);
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  docs.map((d) => ({ ...d, extracted: summarizeExtracted(d.extracted) })),
+                  null,
+                  2,
+                ),
+              },
+            ],
+          };
+        }
+        case "extract_fhir": {
+          const parsed = ExtractFhirInput.parse(args);
+          const doc = docCache.get(parsed.documentId);
+          if (!doc) {
+            return {
+              isError: true,
+              content: [{ type: "text", text: `Unknown documentId: ${parsed.documentId}` }],
+            };
+          }
+          const result = extractFhirFn({ document: doc });
+          return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        }
+        case "build_ips_bundle": {
+          const parsed = BuildIpsBundleInput.parse(args);
+          const bundle = buildIpsBundle(parsed);
+          return { content: [{ type: "text", text: JSON.stringify(bundle, null, 2) }] };
+        }
+        case "render_clinical_summary_pdf": {
+          const parsed = RenderClinicalSummaryPdfInput.parse(args);
+          const pdf = await renderClinicalSummaryPdf(parsed);
+          return pdfResult(pdf, "clinical-summary.pdf");
+        }
+        case "render_timeline_pdf": {
+          const parsed = RenderTimelinePdfInput.parse(args);
+          const pdf = await renderTimelinePdf(parsed.patientName, parsed.entries);
+          return pdfResult(pdf, "timeline.pdf");
+        }
+        case "render_ips_narrative_pdf": {
+          const parsed = RenderIpsNarrativePdfInput.parse(args);
+          const pdf = await renderIpsNarrativePdf(parsed.bundle as FhirBundle);
+          return pdfResult(pdf, "ips-narrative.pdf");
+        }
+        case "render_insurance_card_pdf": {
+          const parsed = RenderInsuranceCardPdfInput.parse(args);
+          const pdf = await renderInsuranceCardPdf(parsed);
+          return pdfResult(pdf, "insurance-card.pdf");
+        }
+        case "build_mega_bundle": {
+          const parsed = BuildMegaBundleInput.parse(args);
+          const bundle = buildMegaBundle({
+            ipsBundle: parsed.ipsBundle as FhirBundle,
+            inlineDocuments: parsed.inlineDocuments,
+            archiveDocuments: parsed.archiveDocuments,
+            insuranceCards: parsed.insuranceCards,
+          });
+          return { content: [{ type: "text", text: JSON.stringify(bundle, null, 2) }] };
         }
         default:
           return {
@@ -206,6 +345,44 @@ export function buildApp(deps: { store: LinkStore; config: AppConfig }): ServerB
   });
 
   return { app, mcp, store: deps.store, config: deps.config };
+}
+
+function pdfResult(pdf: Buffer, filename: string): { content: { type: "text"; text: string }[] } {
+  const base64 = pdf.toString("base64");
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          {
+            filename,
+            mimeType: "application/pdf",
+            sizeBytes: pdf.length,
+            base64,
+            dataUrl: `data:application/pdf;base64,${base64}`,
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  };
+}
+
+/**
+ * For ingest_documents results, omit the full per-page text from the LLM-facing
+ * payload when it's enormous; keep first 2000 chars per page. Bundle/JSON
+ * extracts pass through.
+ */
+function summarizeExtracted(extracted: unknown): unknown {
+  if (extracted && typeof extracted === "object" && Array.isArray((extracted as { pages?: string[] }).pages)) {
+    const pages = (extracted as { pages: string[] }).pages;
+    return {
+      pages: pages.map((p) => (p.length > 2000 ? p.slice(0, 2000) + "\n…[truncated]" : p)),
+      truncated: pages.some((p) => p.length > 2000),
+    };
+  }
+  return extracted;
 }
 
 function setJoseCors(res: Response): void {

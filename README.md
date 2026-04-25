@@ -5,12 +5,27 @@ generate **SMART Health Links** (SHL) and QR codes for sharing FHIR data.
 
 This is a working prototype. It implements the four tools requested:
 
+### Share-link tools
+
 | Tool | Purpose |
 |---|---|
-| `create_smart_health_link` | Create an SHL URI for a FHIR Bundle, IPS, medication list, visit summary, or insurance card. Supports expiration + optional passcode. |
-| `render_qr_code` | Render an SHL URI as SVG + PNG. |
+| `create_smart_health_link` | Create an SHL URI for a FHIR Bundle, IPS, medication list, visit summary, or insurance card. Supports expiration + optional passcode + viewer wrapping. |
+| `render_qr_code` | Render an SHL URI as SVG + PNG (raw / viewer-wrapped / universal). |
 | `revoke_smart_health_link` | Revoke a previously-generated link. |
 | `get_smart_health_link_status` | Check whether a link is active, expired, or revoked. |
+
+### Health-pipeline tools (NEW)
+
+| Tool | Purpose |
+|---|---|
+| `ingest_documents` | Classify + parse uploaded files (FHIR JSON, SHL JWE, PDF, CCDA). Returns per-page text for PDFs + a layout hint (mychart / ciox / caresync / etc.). |
+| `extract_fhir` | Return the parsed content of an ingested document with a `next` suggestion — designed for LLM-in-the-loop structured extraction. |
+| `build_ips_bundle` | Build a conformant IPS FHIR R4 Bundle with dedupe, RxNorm/SNOMED/CVX codings, "no known allergy" convention, and Composition section assembly (LOINC 60591-5). |
+| `render_clinical_summary_pdf` | Dr-Rider-style ~3-page clinical summary PDF (one-liner / history / regimen / prior therapies / active issues / assessment). |
+| `render_timeline_pdf` | Reverse-chronological 3-column timeline PDF, grouped by month. |
+| `render_ips_narrative_pdf` | Single-column narrative PDF, one section per Composition entry. |
+| `render_insurance_card_pdf` | Wallet-card front + back PDF for an insurance card. |
+| `build_mega_bundle` | Combine an IPS Bundle + priority inline DocumentReferences + archive URL refs + insurance Coverage. Strips inline base64 from existing DocRefs to keep size manageable. |
 
 It talks the SMART Health Links v1 wire format, so the output works with any
 compliant reader (e.g. the `Killtheclipboard` reader repo).
@@ -121,30 +136,51 @@ Specifically:
 | Patient-readable `label` in SHL payload | First-class field on `create_smart_health_link`. |
 | Audit logs without PHI | Audit log strips a key deny-list (`patient`, `bundle`, `passcode`, `mrn`, …). |
 
-### What this MCP **does not** yet implement from the handoff
+### Coverage of the handoff's 10-stage pipeline
 
-The handoff describes a 10-stage pipeline. This MCP covers stages 8–9 (encrypt
-+ generate SHL/QR) and a server-side host (stage 10). Stages 1–7 are out of
-scope for this prototype:
+| Handoff stage | Status |
+|---|---|
+| 1. Ingest (`.json`, `.jwe`, `.pdf`, `.xml`, image) | ✅ `ingest_documents` |
+| 2. Parse CareSync timeline PDF (column-aware) | ⚠️ Text-only via pdf-parse + LLM-in-the-loop. No pdfplumber-equivalent in the JS ecosystem. |
+| 3. Parse MyChart visit PDFs | ⚠️ Text + layout hint; LLM extracts Assessment + Plan. |
+| 4. Parse Ciox/Datavant ROI packets | ⚠️ Text + layout hint; LLM skips pages 1–5. |
+| 5. Slug-normalize PDF filenames | ❌ Not yet — host-time concern, easy add. |
+| 6. Build IPS bundle | ✅ `build_ips_bundle` (RxNorm / SNOMED / CVX / ICD-10-CM, "no known allergy" SNOMED 716186003, drops thin immunization sections, Composition LOINC 60591-5, patient-authored author marker). |
+| 7. Merge + dedupe | ✅ Built into `build_ips_bundle` (medication brand/generic equivalence map, condition concept canonicalization, drops CareSync `code.text="Active"` junk). |
+| 8. Render PDFs (IPS narrative / clinical summary / timeline) | ✅ Three render tools using `pdfkit` (Georgia for clinical, Helvetica for tables). |
+| 9. Encrypt as JWE (no `zip`!) | ✅ `src/backend/jwe.ts`. |
+| 10. Generate SHL URI + QR + host | ✅ `create_smart_health_link` + `render_qr_code` + `/shl/file/:id.jwe`. |
+| Bonus: Insurance | ✅ `render_insurance_card_pdf` + FHIR `Coverage` resources merged into the mega-bundle. |
 
-- **Ingest** (`.json`, `.jwe`, `.pdf`, `.zip`, `.xml`, image, audio)
-- **Parse** CareSync timeline PDFs (column-aware via pdfplumber)
-- **Parse** MyChart "Past Visit Details" PDFs (Assessment + Plan extraction)
-- **Parse** Ciox/Datavant ROI packets (skip pages 1–5)
-- **Slug-normalize** PDF filenames + 100% match validation
-- **Build the IPS bundle** (LOINC `60591-5`, Allergies / Medications / Problems sections, `716186003` "no known allergy" convention)
-- **Merge + dedupe** (RxNorm canonicalization, SNOMED equivalence map, MVA-trauma grouping)
-- **Render** IPS narrative / clinical summary / timeline PDFs (WeasyPrint, Georgia serif, page-break-inside avoid)
-- **Tiered document strategy** (priority inline base64 + archive URL refs)
-- **Static deployment** (Vercel `vercel.json` with per-path Content-Type + CORS rules)
+PDF parsing is the one area where the JS ecosystem can't match Python's
+pdfplumber. The handoff itself notes the parsers benefit from LLM-in-the-loop,
+so `ingest_documents` extracts plain text + a `layoutHint` and returns it for
+the calling chat to do the structured extraction.
 
-These would be added as additional MCP tools (the handoff lists 11 candidates:
-`ingest_documents`, `extract_fhir`, `build_ips_bundle`, `render_timeline_pdf`,
-`render_clinical_summary_pdf`, `render_ips_narrative_pdf`, `build_mega_bundle`,
-`encrypt_shl_jwe`, `generate_shl_uri`, `generate_qr`,
-`prepare_vercel_deployment`). The current server has 4 tools; the
-ingest/parse/render tools would likely be a separate Python service since the
-handoff stack uses pdfplumber / WeasyPrint / pypdf.
+### Typical end-to-end flow
+
+```
+ingest_documents([visit1.pdf, lab2.pdf, mychart-export.json])
+     ↓ returns documentId + per-page text + layoutHint per file
+extract_fhir({documentId})    ← LLM reads pages, builds structured data
+     ↓
+build_ips_bundle({patient, conditions, medications, allergies, ...})
+     ↓ returns IPS Bundle JSON
+render_clinical_summary_pdf(...)   ┐
+render_timeline_pdf(...)            ├─ → 3 priority-tier PDFs
+render_ips_narrative_pdf({bundle}) ┘
+     ↓
+build_mega_bundle({
+  ipsBundle, insuranceCards: [...],
+  inlineDocuments: [{title:"Clinical Summary", contentBase64:"…"}, …],
+  archiveDocuments: [{title:"Old labs 2018", url:"https://…"}, …],
+})
+     ↓ returns mega-bundle JSON
+create_smart_health_link({resourceType:"fhir-bundle", payload: <mega>})
+     ↓ returns shlinkUri + viewerUrl + fileUrl
+render_qr_code({link: viewerUrl, style:"universal"})
+     ↓ returns PNG + SVG QR ready for printing or texting
+```
 
 ---
 

@@ -123,3 +123,225 @@ export const GetSmartHealthLinkStatusInput = z.object({
 });
 
 export type GetSmartHealthLinkStatusInputT = z.infer<typeof GetSmartHealthLinkStatusInput>;
+
+// ============================================================================
+// Health pipeline tools (build_ips, render_*, build_mega, ingest, extract,
+// render_insurance_card)
+// ============================================================================
+
+export const IngestDocumentsInput = z.object({
+  files: z
+    .array(
+      z.object({
+        contentBase64: z.string().min(1),
+        filename: z.string().optional(),
+        contentType: z.string().optional(),
+        jweKey: z.string().optional().describe("43-char base64url key for SHL JWE inputs"),
+        layoutHint: z
+          .enum([
+            "caresync",
+            "mychart",
+            "ciox",
+            "discharge-summary",
+            "operative-report",
+            "lab-report",
+            "imaging-read",
+            "ros-pdf",
+            "generic",
+          ])
+          .optional(),
+      }),
+    )
+    .min(1)
+    .describe("One or more documents to classify and parse. Use ingest_documents before extract_fhir."),
+});
+
+export const ExtractFhirInput = z.object({
+  documentId: z.string().min(1).describe("ID returned from ingest_documents."),
+});
+
+const PatientSchema = z.object({
+  givenName: z.string().min(1),
+  familyName: z.string().min(1),
+  birthDate: z.string().optional(),
+  gender: z.enum(["male", "female", "other", "unknown"]).optional(),
+});
+
+export const BuildIpsBundleInput = z.object({
+  patient: PatientSchema,
+  custodianOrganization: z.object({ name: z.string() }).optional(),
+  conditions: z
+    .array(
+      z.object({
+        text: z.string(),
+        snomed: z.string().optional(),
+        icd10: z.string().optional(),
+        clinicalStatus: z
+          .enum(["active", "recurrence", "relapse", "inactive", "remission", "resolved"])
+          .optional(),
+        onsetDate: z.string().optional(),
+        recordedDate: z.string().optional(),
+      }),
+    )
+    .optional(),
+  medications: z
+    .array(
+      z.object({
+        text: z.string(),
+        rxnorm: z.string().optional(),
+        status: z.enum(["active", "completed", "stopped", "intended", "on-hold"]).optional(),
+        dosage: z.string().optional(),
+        asserter: z.enum(["patient", "clinician"]).optional(),
+      }),
+    )
+    .optional(),
+  allergies: z
+    .array(
+      z.object({
+        text: z.string(),
+        snomed: z.string().optional(),
+        severity: z.enum(["mild", "moderate", "severe"]).optional(),
+        reaction: z.string().optional(),
+      }),
+    )
+    .optional(),
+  procedures: z
+    .array(
+      z.object({
+        text: z.string(),
+        snomed: z.string().optional(),
+        cpt: z.string().optional(),
+        performedDate: z.string().optional(),
+      }),
+    )
+    .optional(),
+  observations: z
+    .array(
+      z.object({
+        text: z.string(),
+        loinc: z.string().optional(),
+        value: z.union([z.string(), z.number()]).optional(),
+        unit: z.string().optional(),
+        effectiveDate: z.string().optional(),
+      }),
+    )
+    .optional(),
+  immunizations: z
+    .array(
+      z.object({
+        text: z.string(),
+        cvx: z.string().optional(),
+        date: z.string().optional(),
+      }),
+    )
+    .optional(),
+  dedupe: z.boolean().optional(),
+  pruneEmpty: z.boolean().optional(),
+  skipSections: z.array(z.enum(["immunizations", "procedures", "results"])).optional(),
+  patientAuthored: z.boolean().optional(),
+});
+
+export const RenderClinicalSummaryPdfInput = z.object({
+  patientName: z.string().min(1),
+  patientDob: z.string().optional(),
+  oneLiner: z.string().min(1).describe("Single-sentence patient pitch."),
+  history: z.array(z.string()).default([]).describe("History paragraphs."),
+  currentRegimen: z
+    .array(
+      z.object({
+        medication: z.string(),
+        dose: z.string().optional(),
+        indication: z.string().optional(),
+      }),
+    )
+    .default([]),
+  priorTherapies: z.string().optional(),
+  activeIssues: z.array(z.string()).default([]),
+  assessment: z.string().min(1),
+  audience: z.enum(["oncologist", "pcp", "er", "general"]).optional(),
+  authorNote: z.string().optional(),
+});
+
+export const RenderTimelinePdfInput = z.object({
+  patientName: z.string().min(1),
+  entries: z
+    .array(
+      z.object({
+        date: z.string().describe("ISO YYYY-MM-DD"),
+        event: z.string(),
+        notes: z.string().optional(),
+        provider: z.string().optional(),
+        facility: z.string().optional(),
+      }),
+    )
+    .min(1),
+});
+
+export const RenderIpsNarrativePdfInput = z.object({
+  bundle: z.unknown().describe("FHIR IPS Bundle (JSON object)"),
+});
+
+const InsuranceCardSchema = z.object({
+  payerName: z.string().min(1),
+  planName: z.string().optional(),
+  memberName: z.string().min(1),
+  memberId: z.string().min(1),
+  groupNumber: z.string().optional(),
+  order: z.enum(["primary", "secondary", "tertiary"]).optional(),
+  effectiveDate: z.string().optional(),
+  expirationDate: z.string().optional(),
+  rxBin: z.string().optional(),
+  rxPcn: z.string().optional(),
+  rxGroup: z.string().optional(),
+  copay: z.string().optional(),
+  customerServicePhone: z.string().optional(),
+  providerPhone: z.string().optional(),
+  dependents: z
+    .array(
+      z.object({
+        name: z.string(),
+        relationship: z.string().optional(),
+        dateOfBirth: z.string().optional(),
+      }),
+    )
+    .optional(),
+  claimsAddress: z.string().optional(),
+});
+
+export const RenderInsuranceCardPdfInput = InsuranceCardSchema;
+
+export const BuildMegaBundleInput = z.object({
+  ipsBundle: z.unknown().describe("FHIR IPS Bundle (JSON object) returned from build_ips_bundle."),
+  inlineDocuments: z
+    .array(
+      z.object({
+        title: z.string(),
+        contentBase64: z.string(),
+        contentType: z.string().optional(),
+        date: z.string().optional(),
+      }),
+    )
+    .optional()
+    .describe("Priority tier — inlined as DocumentReference.attachment.data."),
+  archiveDocuments: z
+    .array(
+      z.object({
+        title: z.string(),
+        url: z.string().url(),
+        contentType: z.string().optional(),
+        date: z.string().optional(),
+      }),
+    )
+    .optional()
+    .describe("Archive tier — referenced by URL only (no PHI stored on this server)."),
+  insuranceCards: z.array(InsuranceCardSchema).optional(),
+});
+
+export type IngestDocumentsInputT = z.infer<typeof IngestDocumentsInput>;
+export type ExtractFhirInputT = z.infer<typeof ExtractFhirInput>;
+export type BuildIpsBundleInputT = z.infer<typeof BuildIpsBundleInput>;
+export type RenderClinicalSummaryPdfInputT = z.infer<typeof RenderClinicalSummaryPdfInput>;
+export type RenderTimelinePdfInputT = z.infer<typeof RenderTimelinePdfInput>;
+export type RenderIpsNarrativePdfInputT = z.infer<typeof RenderIpsNarrativePdfInput>;
+export type RenderInsuranceCardPdfInputT = z.infer<typeof RenderInsuranceCardPdfInput>;
+export type BuildMegaBundleInputT = z.infer<typeof BuildMegaBundleInput>;
