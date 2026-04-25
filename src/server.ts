@@ -295,7 +295,12 @@ export function buildMcpServer(deps: { store: LinkStore; config: AppConfig }): S
 
 export function buildApp(deps: { store: LinkStore; config: AppConfig }): ServerBundle {
   const app = express();
-  app.use(express.json({ limit: "2mb" }));
+  // Trust the upstream proxy (Fly, Render, Cloudflare, Nginx) so that
+  // req.protocol reflects the original https scheme.
+  app.set("trust proxy", true);
+  // 25 MB so ingest_documents can accept multi-PDF base64 uploads (each
+  // base64 inflates ~33%). Share-link payloads remain well under this.
+  app.use(express.json({ limit: "25mb" }));
 
   const mcp = buildMcpServer(deps);
 

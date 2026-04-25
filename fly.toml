@@ -1,0 +1,38 @@
+# fly.toml — KTC Patient MCP server
+#
+# Edit `app` to your chosen Fly app name before `fly launch --no-deploy`.
+# Fly's edge handles TLS, so the app speaks plain HTTP on PORT 8080
+# internally. PUBLIC_BASE_URL is set as a non-secret env (see deploy steps).
+
+app = "ktc-patient-mcp"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  HOST = "0.0.0.0"
+  AUDIT_LOG = "stdout"
+  DEFAULT_LINK_TTL_SECONDS = "3600"
+  MAX_LINK_TTL_SECONDS = "2592000"
+  # PUBLIC_BASE_URL is set via `fly secrets set` after first deploy
+  # so it can be filled in with the real <app>.fly.dev hostname.
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

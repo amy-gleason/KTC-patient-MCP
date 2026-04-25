@@ -75,6 +75,12 @@ Covers every tool, the SHL URI encoder/decoder, and the JWE A256GCM wrapper.
 
 ---
 
+## Deploying
+
+- **Fly.io** (recommended for prototypes) — see [`docs/DEPLOY-FLY.md`](./docs/DEPLOY-FLY.md). One-time setup is ~5 minutes.
+- **Render / Railway** — push the repo, set `PAYLOAD_ENCRYPTION_KEY`, deploy. The provided `Dockerfile` works as-is.
+- **Your own host** — `docker build . && docker run -p 8443:8080 -e PAYLOAD_ENCRYPTION_KEY=...` behind any TLS terminator (Caddy, Nginx, Cloudflare).
+
 ## Connecting to Claude (claude.ai + Claude Code)
 
 ### claude.ai (Custom Connector, remote MCP)

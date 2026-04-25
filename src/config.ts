@@ -34,8 +34,13 @@ function readKey(envVal: string | undefined): Buffer {
 export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   if (cached && Object.keys(overrides).length === 0) return cached;
   const port = parseInt(process.env.PORT ?? "8443", 10);
+  // Auto-derive PUBLIC_BASE_URL on Fly if not set explicitly.
+  const flyApp = process.env.FLY_APP_NAME;
+  const defaultPublic =
+    process.env.PUBLIC_BASE_URL ??
+    (flyApp ? `https://${flyApp}.fly.dev` : `http://localhost:${port}`);
   const cfg: AppConfig = {
-    publicBaseUrl: process.env.PUBLIC_BASE_URL ?? `http://localhost:${port}`,
+    publicBaseUrl: defaultPublic,
     host: process.env.HOST ?? "0.0.0.0",
     port,
     tlsCertFile: process.env.TLS_CERT_FILE,

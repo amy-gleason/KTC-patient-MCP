@@ -1,0 +1,14 @@
+node_modules
+dist
+coverage
+.git
+.gitignore
+.env
+.env.*
+certs
+tests
+*.log
+.DS_Store
+.vscode
+.idea
+HANDOFF*.md
