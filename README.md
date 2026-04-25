@@ -44,8 +44,9 @@ Plain HTTP (no TLS) is supported for local iteration — just omit
 - `GET /healthz` — liveness probe
 - `GET /mcp/sse` — MCP SSE stream (remote transport)
 - `POST /mcp/messages?sessionId=…` — MCP client → server messages
-- `POST /shl/manifest/:id` — SHL manifest (per SHL v1 spec; accepts optional `passcode`)
-- `GET  /shl/manifest/:id` — convenience variant for dev testing
+- `GET /shl/file/:id.jwe` — **direct-file mode (default, U-flag)**. Returns raw JWE bytes with `Content-Type: application/jose` + permissive CORS. Static-host friendly per the handoff spec.
+- `POST /shl/manifest/:id` — manifest mode (used when `singleUse: false`). Accepts optional `passcode`.
+- `GET  /shl/manifest/:id` — convenience GET for dev testing.
 
 ---
 
@@ -102,6 +103,51 @@ Settings → Connectors → Add).
 
 ---
 
+## Alignment with `HANDOFF-spec-for-MCP.md`
+
+This server's SHL/QR layer follows the conventions captured in
+`HANDOFF-spec-for-MCP.md` (the production-tested spec from the proof-of-concept).
+Specifically:
+
+| Handoff spec rule | How this server complies |
+|---|---|
+| JWE header **must not** include `zip: "DEF"` | `src/backend/jwe.ts` emits `{alg:"dir", enc:"A256GCM", cty:"application/fhir+json"}` only. |
+| Default `flag: "U"` (direct-file) for static-friendly delivery | Default in `create_smart_health_link`. Set `singleUse: false` to fall back to manifest mode. |
+| `Content-Type: application/jose` on the JWE URL | Set explicitly in `handleDirectFile`; tested. |
+| CORS `*` on the JWE URL | `Access-Control-Allow-Origin: *` plus methods/headers + `Cache-Control` per the handoff Vercel config. |
+| Universal QR (one QR for phone cameras AND SHL scanners) | `render_qr_code` `style: "universal"` (default) wraps the shlink in a viewer URL fragment. |
+| Viewer fallbacks (`viewer.smarthealthit.org` is unreliable) | `viewer` parameter accepts `commonhealth` (default), `vaxx`, `none`, or a custom https URL. |
+| 32-byte AES-GCM key, 43-char base64url in SHL payload | `randomBytes(32)` → `base64UrlEncode` (43 chars). |
+| Patient-readable `label` in SHL payload | First-class field on `create_smart_health_link`. |
+| Audit logs without PHI | Audit log strips a key deny-list (`patient`, `bundle`, `passcode`, `mrn`, …). |
+
+### What this MCP **does not** yet implement from the handoff
+
+The handoff describes a 10-stage pipeline. This MCP covers stages 8–9 (encrypt
++ generate SHL/QR) and a server-side host (stage 10). Stages 1–7 are out of
+scope for this prototype:
+
+- **Ingest** (`.json`, `.jwe`, `.pdf`, `.zip`, `.xml`, image, audio)
+- **Parse** CareSync timeline PDFs (column-aware via pdfplumber)
+- **Parse** MyChart "Past Visit Details" PDFs (Assessment + Plan extraction)
+- **Parse** Ciox/Datavant ROI packets (skip pages 1–5)
+- **Slug-normalize** PDF filenames + 100% match validation
+- **Build the IPS bundle** (LOINC `60591-5`, Allergies / Medications / Problems sections, `716186003` "no known allergy" convention)
+- **Merge + dedupe** (RxNorm canonicalization, SNOMED equivalence map, MVA-trauma grouping)
+- **Render** IPS narrative / clinical summary / timeline PDFs (WeasyPrint, Georgia serif, page-break-inside avoid)
+- **Tiered document strategy** (priority inline base64 + archive URL refs)
+- **Static deployment** (Vercel `vercel.json` with per-path Content-Type + CORS rules)
+
+These would be added as additional MCP tools (the handoff lists 11 candidates:
+`ingest_documents`, `extract_fhir`, `build_ips_bundle`, `render_timeline_pdf`,
+`render_clinical_summary_pdf`, `render_ips_narrative_pdf`, `build_mega_bundle`,
+`encrypt_shl_jwe`, `generate_shl_uri`, `generate_qr`,
+`prepare_vercel_deployment`). The current server has 4 tools; the
+ingest/parse/render tools would likely be a separate Python service since the
+handoff stack uses pdfplumber / WeasyPrint / pypdf.
+
+---
+
 ## Example tool calls
 
 ### Create a SHL from an IPS bundle
@@ -145,13 +191,21 @@ Response:
   "tool": "render_qr_code",
   "arguments": {
     "link": "shlink:/eyJ1cmwiOi…",
+    "style": "universal",          // default — works for phone camera AND SHL scanners
+    "viewer": "commonhealth",      // or "vaxx", "none", or a custom https URL
     "size": 512
   }
 }
 ```
 
-Returns `svg`, `pngBase64`, and `pngDataUrl` (plus an inline `image` content
-block that Claude/ChatGPT render directly).
+Returns `svg`, `pngBase64`, `pngDataUrl`, the `encoded` string actually
+rendered into the QR, and the `style`. Plus an inline `image` content block
+that Claude/ChatGPT render directly.
+
+QR styles:
+- `raw` — encodes only `shlink:/…` (SHL-native scanners only; phone camera will fail to open)
+- `viewer_wrapped` — encodes `https://viewer.commonhealth.org/#shlink:/…` (phone cameras open it)
+- `universal` (default) — same as `viewer_wrapped`; SHL-native scanners regex out the shlink. **One QR for both.**
 
 ### Revoke
 

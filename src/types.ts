@@ -28,8 +28,16 @@ export interface StoredLink {
 
 export interface CreateLinkResult {
   id: string;
+  /** Raw shlink:/ URI — for SHL-native scanners. */
   shlinkUri: string;
+  /** Viewer-wrapped URL ("universal" QR target) — works with phone cameras AND SHL scanners. */
   viewerUrl: string;
+  /** Direct JWE bytes URL (only meaningful when flag includes "U"). Static-host friendly. */
+  fileUrl: string;
+  /** Manifest URL (SHL spec POST endpoint). Used when flag does NOT include "U". */
+  manifestUrl: string;
+  /** SHL flag string actually applied (e.g. "U", "PU", "LP"). */
+  flag?: string;
   expiresAt: number;
   resourceType: ResourceType;
   label: string;

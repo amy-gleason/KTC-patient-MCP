@@ -42,3 +42,25 @@ export function computeFlag(opts: { passcode: boolean; longTerm?: boolean; singl
   if (opts.singleUse) flag += "U";
   return flag || undefined;
 }
+
+export type ViewerOption = "commonhealth" | "vaxx" | "none" | string;
+
+const VIEWER_PRESETS: Record<string, string> = {
+  commonhealth: "https://viewer.commonhealth.org/",
+  vaxx: "https://demo.vaxx.link/viewer",
+};
+
+/**
+ * Resolve a viewer option to a URL prefix. Returns undefined if no viewer
+ * should be applied (i.e. emit raw shlink:/ only).
+ *
+ * Per the handoff spec, the canonical reference viewer at
+ * viewer.smarthealthit.org has been unreliable; commonhealth and vaxx are
+ * the working alternatives as of April 2026.
+ */
+export function resolveViewer(opt: ViewerOption | undefined): string | undefined {
+  if (!opt || opt === "none") return undefined;
+  if (VIEWER_PRESETS[opt]) return VIEWER_PRESETS[opt];
+  if (opt.startsWith("https://")) return opt;
+  return undefined;
+}

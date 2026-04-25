@@ -8,6 +8,17 @@ export const ResourceTypeSchema = z.enum([
   "insurance-card",
 ]);
 
+export const ViewerSchema = z
+  .union([
+    z.literal("commonhealth"),
+    z.literal("vaxx"),
+    z.literal("none"),
+    z.string().url().describe("Custom viewer URL (must use https)."),
+  ])
+  .describe(
+    "SHL viewer to wrap the URI in. 'commonhealth' → https://viewer.commonhealth.org/, 'vaxx' → https://demo.vaxx.link/viewer, 'none' → emit raw shlink:/ URI only, or a custom https URL.",
+  );
+
 export const CreateSmartHealthLinkInput = z
   .object({
     resourceType: ResourceTypeSchema.describe(
@@ -45,10 +56,17 @@ export const CreateSmartHealthLinkInput = z
       .max(64)
       .optional()
       .describe("Optional passcode required to resolve the link. Stored only as a scrypt hash."),
+    longTerm: z
+      .boolean()
+      .optional()
+      .describe("If true, sets the SHL L-flag (long-term link)."),
     singleUse: z
       .boolean()
       .optional()
-      .describe("If true, marks the link with the SHL U-flag (single use)."),
+      .describe("If true, sets the SHL U-flag (single-use direct-file mode). Defaults to true — recommended for static-friendly hosting per the SHL handoff spec."),
+    viewer: ViewerSchema.optional().describe(
+      "Optional viewer to wrap the SHL URI in for phone-camera scanning. Defaults to 'commonhealth'.",
+    ),
   })
   .refine((v) => v.payload !== undefined || v.bundleReference !== undefined, {
     message: "Either 'payload' or 'bundleReference' is required.",
@@ -56,19 +74,35 @@ export const CreateSmartHealthLinkInput = z
 
 export type CreateSmartHealthLinkInputT = z.infer<typeof CreateSmartHealthLinkInput>;
 
+export const QrStyleSchema = z
+  .enum(["raw", "viewer_wrapped", "universal"])
+  .describe(
+    "QR style. 'raw' encodes shlink:/ directly (SHL-native scanners only). 'viewer_wrapped' encodes a viewer URL with the shlink in the fragment (phone cameras only). 'universal' encodes the viewer URL — works for both phone cameras and SHL-native scanners that regex out the shlink. Default: 'universal'.",
+  );
+
 export const RenderQrCodeInput = z.object({
   link: z
     .string()
     .min(1)
-    .describe("A SMART Health Link URL or shlink:/ URI."),
+    .describe(
+      "A SMART Health Link URL, shlink:/ URI, or viewer-wrapped URL. The tool will detect the format and apply the requested style.",
+    ),
+  style: QrStyleSchema.default("universal"),
+  viewer: ViewerSchema.optional().describe(
+    "Viewer to wrap the SHL with when style=viewer_wrapped or universal. Defaults to 'commonhealth'.",
+  ),
   size: z
     .number()
     .int()
     .min(128)
     .max(2048)
     .default(512)
-    .describe("Pixel width/height of the PNG output."),
+    .describe("Pixel width/height of the PNG output. Print-quality default ~512px."),
   margin: z.number().int().min(0).max(16).default(2),
+  errorCorrection: z
+    .enum(["L", "M", "Q", "H"])
+    .default("M")
+    .describe("QR error correction level. M is the SHL handoff spec default."),
   includeDataUrl: z
     .boolean()
     .default(true)

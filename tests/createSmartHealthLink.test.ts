@@ -5,7 +5,7 @@ import { MOCK_IPS_BUNDLE } from "../src/mock/fhirBundle.js";
 import { testConfig, testStore } from "./helpers.js";
 
 describe("create_smart_health_link", () => {
-  it("creates a link for an inline IPS bundle", () => {
+  it("creates a link for an inline IPS bundle (default U-flag direct-file mode)", () => {
     const store = testStore();
     const config = testConfig();
     const result = createSmartHealthLink(
@@ -16,11 +16,67 @@ describe("create_smart_health_link", () => {
     expect(result.shlinkUri).toMatch(/^shlink:\//);
     expect(result.resourceType).toBe("ips");
     expect(result.passcodeRequired).toBe(false);
+    // Default flag should include U for static-friendly direct-file delivery.
+    expect(result.flag).toContain("U");
+    expect(result.fileUrl).toContain(`/shl/file/${result.id}.jwe`);
+    expect(result.manifestUrl).toContain(`/shl/manifest/${result.id}`);
+    // Default viewer is commonhealth; viewerUrl wraps the shlink in the fragment.
+    expect(result.viewerUrl).toContain("viewer.commonhealth.org");
+    expect(result.viewerUrl).toContain("shlink:/");
 
     const payload = parseShlinkUri(result.shlinkUri);
-    expect(payload.url).toContain(`/shl/manifest/${result.id}`);
+    expect(payload.url).toContain(`/shl/file/${result.id}.jwe`);
     expect(payload.key).toHaveLength(43);
     expect(payload.exp).toBeGreaterThan(Math.floor(Date.now() / 1000));
+  });
+
+  it("falls back to manifest URL when singleUse=false", () => {
+    const store = testStore();
+    const config = testConfig();
+    const result = createSmartHealthLink(
+      {
+        resourceType: "ips",
+        label: "x",
+        payload: { ok: true },
+        singleUse: false,
+      },
+      { store, config },
+    );
+    const payload = parseShlinkUri(result.shlinkUri);
+    expect(payload.url).toContain("/shl/manifest/");
+    expect(payload.flag ?? "").not.toContain("U");
+  });
+
+  it("respects viewer='none' (raw shlink only)", () => {
+    const store = testStore();
+    const config = testConfig();
+    const result = createSmartHealthLink(
+      {
+        resourceType: "ips",
+        label: "x",
+        payload: { ok: true },
+        viewer: "none",
+      },
+      { store, config },
+    );
+    expect(result.viewerUrl).toBe(result.shlinkUri);
+    expect(result.viewerUrl).toMatch(/^shlink:\//);
+  });
+
+  it("accepts a custom viewer URL", () => {
+    const store = testStore();
+    const config = testConfig();
+    const result = createSmartHealthLink(
+      {
+        resourceType: "ips",
+        label: "x",
+        payload: { ok: true },
+        viewer: "https://demo.vaxx.link/viewer",
+      },
+      { store, config },
+    );
+    expect(result.viewerUrl).toContain("demo.vaxx.link/viewer");
+    expect(result.viewerUrl).toContain("#shlink:/");
   });
 
   it("enforces passcode flag and hashes passcode", () => {
@@ -32,6 +88,8 @@ describe("create_smart_health_link", () => {
         label: "Meds",
         payload: { resourceType: "Bundle", entry: [] },
         passcode: "hunter2",
+        // Use manifest mode so the passcode check runs at manifest fetch.
+        singleUse: false,
       },
       { store, config },
     );

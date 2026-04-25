@@ -194,7 +194,84 @@ export function buildApp(deps: { store: LinkStore; config: AppConfig }): ServerB
     await handleManifest(req, res, deps);
   });
 
+  // Direct-file mode (SHL "U" flag). Static-host friendly: returns the raw JWE
+  // bytes with Content-Type: application/jose + permissive CORS.
+  // Per the handoff spec this is preferred for static deployments.
+  app.options("/shl/file/:id.jwe", (_req, res) => {
+    setJoseCors(res);
+    res.status(204).end();
+  });
+  app.get("/shl/file/:id.jwe", async (req, res) => {
+    await handleDirectFile(req, res, deps);
+  });
+
   return { app, mcp, store: deps.store, config: deps.config };
+}
+
+function setJoseCors(res: Response): void {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept");
+  res.setHeader("Cache-Control", "public, max-age=300, s-maxage=300");
+}
+
+async function handleDirectFile(
+  req: Request,
+  res: Response,
+  deps: { store: LinkStore; config: AppConfig },
+): Promise<void> {
+  const id = req.params.id;
+  const rec = deps.store.get(id);
+  if (!rec) {
+    audit("link.access_denied", id, { reason: "not-found" });
+    setJoseCors(res);
+    res.status(404).json({ error: "Link not found" });
+    return;
+  }
+  if (rec.revoked) {
+    audit("link.access_denied", id, { reason: "revoked" });
+    setJoseCors(res);
+    res.status(410).json({ error: "Link revoked" });
+    return;
+  }
+  if (rec.expiresAt <= Math.floor(Date.now() / 1000)) {
+    audit("link.access_denied", id, { reason: "expired" });
+    setJoseCors(res);
+    res.status(410).json({ error: "Link expired" });
+    return;
+  }
+
+  // Resolve plaintext.
+  let plaintextObj: unknown;
+  if (rec.ciphertext) {
+    plaintextObj = decryptJson(
+      { ciphertext: rec.ciphertext, iv: rec.iv, authTag: rec.authTag },
+      deps.config.payloadKey,
+    );
+  } else if (rec.byReference) {
+    plaintextObj = { reference: rec.byReference };
+  } else {
+    res.status(500).json({ error: "Link has no payload or reference" });
+    return;
+  }
+
+  const keyBytes = Buffer.from(
+    rec.encryptionKey.replace(/-/g, "+").replace(/_/g, "/") +
+      "=".repeat((4 - (rec.encryptionKey.length % 4)) % 4),
+    "base64",
+  );
+  const cty = rec.resourceType === "insurance-card" ? "application/json" : "application/fhir+json";
+  // Per handoff: NO `zip: "DEF"` — many viewers fail to decompress.
+  const jwe = encryptJwe(Buffer.from(JSON.stringify(plaintextObj), "utf8"), keyBytes, { cty });
+
+  deps.store.recordAccess(id);
+  audit("link.accessed", id, { resourceType: rec.resourceType, mode: "direct-file" });
+
+  setJoseCors(res);
+  // Send as Buffer + explicit header so Express does not append `; charset=utf-8`.
+  // Some scanners validate the Content-Type literally.
+  res.setHeader("Content-Type", "application/jose");
+  res.end(Buffer.from(jwe, "ascii"));
 }
 
 async function handleManifest(
