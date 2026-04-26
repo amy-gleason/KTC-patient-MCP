@@ -7,6 +7,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { zodToJsonSchema as zodToJsonSchemaLib } from "zod-to-json-schema";
 
 import { audit } from "./backend/audit.js";
 import { decryptJson } from "./backend/crypto.js";
@@ -54,35 +55,19 @@ export interface ServerBundle {
 }
 
 function zodToJsonSchema(schema: z.ZodType): Record<string, unknown> {
-  // Minimal subset — just enough for MCP tool advertisement.
-  // For production, use zod-to-json-schema.
-  const def: Record<string, unknown> = { type: "object" };
-  if (schema instanceof z.ZodObject) {
-    const shape = (schema as z.ZodObject<z.ZodRawShape>).shape;
-    const properties: Record<string, unknown> = {};
-    const required: string[] = [];
-    for (const [k, v] of Object.entries(shape)) {
-      properties[k] = describeZod(v as z.ZodType);
-      if (!(v as z.ZodType).isOptional()) required.push(k);
-    }
-    def.properties = properties;
-    if (required.length) def.required = required;
-  }
-  return def;
-}
-
-function describeZod(t: z.ZodType): Record<string, unknown> {
-  const desc = (t as unknown as { _def: { description?: string } })._def.description;
-  const inner = t instanceof z.ZodOptional ? t.unwrap() : t instanceof z.ZodDefault ? t.removeDefault() : t;
-  let base: Record<string, unknown> = {};
-  if (inner instanceof z.ZodString) base = { type: "string" };
-  else if (inner instanceof z.ZodNumber) base = { type: "number" };
-  else if (inner instanceof z.ZodBoolean) base = { type: "boolean" };
-  else if (inner instanceof z.ZodEnum) base = { type: "string", enum: (inner as z.ZodEnum<[string, ...string[]]>).options };
-  else if (inner instanceof z.ZodObject) base = zodToJsonSchema(inner);
-  else base = {};
-  if (desc) base.description = desc;
-  return base;
+  // Use the well-maintained zod-to-json-schema package for full fidelity:
+  // arrays, unions, defaults, descriptions, refinements all flow through.
+  // `target: "openApi3"` produces output that ChatGPT and Claude both accept;
+  // the default JSON Schema 2020-12 dialect uses $ref/$defs that some
+  // validators reject.
+  const out = zodToJsonSchemaLib(schema, {
+    target: "openApi3",
+    $refStrategy: "none",
+  }) as Record<string, unknown>;
+  // Ensure top-level `type: "object"` is present even if the package omits it
+  // for objects with no required fields.
+  if (!("type" in out)) out.type = "object";
+  return out;
 }
 
 export interface McpDeps {
