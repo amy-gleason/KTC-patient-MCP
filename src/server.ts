@@ -1,6 +1,7 @@
 import express, { type Express, type Request, type Response } from "express";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -84,14 +85,19 @@ function describeZod(t: z.ZodType): Record<string, unknown> {
   return base;
 }
 
-export function buildMcpServer(deps: { store: LinkStore; config: AppConfig }): Server {
+export interface McpDeps {
+  store: LinkStore;
+  config: AppConfig;
+  docCache: Map<string, IngestedDocument>;
+}
+
+export function buildMcpServer(deps: McpDeps): Server {
   const server = new Server(
     { name: "ktc-patient-mcp", version: "0.1.0" },
     { capabilities: { tools: {} } },
   );
 
-  // Document cache so extract_fhir can refer to a previously ingested document by ID.
-  const docCache = new Map<string, IngestedDocument>();
+  const { docCache } = deps;
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
@@ -302,30 +308,66 @@ export function buildApp(deps: { store: LinkStore; config: AppConfig }): ServerB
   // base64 inflates ~33%). Share-link payloads remain well under this.
   app.use(express.json({ limit: "25mb" }));
 
-  const mcp = buildMcpServer(deps);
+  // Document cache shared across per-request MCP server instances so that
+  // ingest_documents on one request and extract_fhir on the next share state.
+  const docCache = new Map<string, IngestedDocument>();
+  const mcpDeps: McpDeps = { ...deps, docCache };
+  const mcp = buildMcpServer(mcpDeps); // kept for compatibility with the bundle return
 
   // Health + metadata (no PHI).
   app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
-  // MCP over SSE (remote transport). Each client opens GET /mcp/sse and
-  // POSTs messages to /mcp/messages?sessionId=...
-  const transports = new Map<string, SSEServerTransport>();
+  // MCP Streamable HTTP transport (current spec; what ChatGPT Apps + Claude
+  // custom connectors expect). Stateless: each request creates a fresh
+  // transport, no session storage. The SDK handles JSON-RPC + streaming.
+  app.all("/mcp", async (req, res) => {
+    try {
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined, // stateless
+      });
+      res.on("close", () => transport.close());
+      // Build a fresh server per request — Server objects are cheap and the
+      // tool dispatchers are stateless aside from the shared store/docCache.
+      const perRequestMcp = buildMcpServer(mcpDeps);
+      await perRequestMcp.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    } catch (err) {
+      if (!res.headersSent) {
+        res.status(500).json({
+          error: "MCP transport error",
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  });
+
+  // Legacy MCP over SSE (deprecated transport). Kept for older clients.
+  // Each connection gets its own Server instance because the SDK Protocol
+  // can only be connected to a single transport at a time.
+  interface SseSession {
+    transport: SSEServerTransport;
+    server: Server;
+  }
+  const sseSessions = new Map<string, SseSession>();
 
   app.get("/mcp/sse", async (_req, res) => {
     const transport = new SSEServerTransport("/mcp/messages", res);
-    transports.set(transport.sessionId, transport);
-    res.on("close", () => transports.delete(transport.sessionId));
-    await mcp.connect(transport);
+    const sessionServer = buildMcpServer(mcpDeps);
+    sseSessions.set(transport.sessionId, { transport, server: sessionServer });
+    res.on("close", () => {
+      sseSessions.delete(transport.sessionId);
+    });
+    await sessionServer.connect(transport);
   });
 
   app.post("/mcp/messages", async (req, res) => {
     const sessionId = req.query.sessionId as string | undefined;
-    const transport = sessionId ? transports.get(sessionId) : undefined;
-    if (!transport) {
+    const session = sessionId ? sseSessions.get(sessionId) : undefined;
+    if (!session) {
       res.status(400).json({ error: "Unknown sessionId" });
       return;
     }
-    await transport.handlePostMessage(req, res);
+    await session.transport.handlePostMessage(req, res);
   });
 
   // SMART Health Link manifest endpoint (SHL v1 spec).
