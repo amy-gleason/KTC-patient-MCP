@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SMART Health Link Viewer</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --card: #ffffff;
+    --border: #e5e7eb;
+    --text: #111827;
+    --muted: #6b7280;
+    --accent: #0b3d91;
+    --accent-hover: #082963;
+    --warning-bg: #fef3c7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+  .container { max-width: 1100px; margin: 0 auto; padding: 24px; }
+  header { background: var(--accent); color: white; padding: 24px 0; margin-bottom: 24px; }
+  header .container { padding-top: 0; padding-bottom: 0; }
+  h1 { margin: 0 0 8px 0; font-size: 28px; font-weight: 600; }
+  .subtitle { opacity: 0.9; font-size: 15px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+  h2 { margin: 0 0 16px 0; font-size: 18px; font-weight: 600; color: var(--accent); border-bottom: 2px solid var(--border); padding-bottom: 8px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  ul { margin: 0; padding-left: 20px; }
+  ul li { margin-bottom: 6px; }
+  .muted { color: var(--muted); font-size: 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  th { background: #f3f4f6; font-weight: 600; position: sticky; top: 0; z-index: 1; }
+  tr:hover { background: #f9fafb; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-hover); text-decoration: underline; }
+  input[type=search] { width: 100%; padding: 10px 12px; font-size: 14px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 12px; }
+  .doc-count { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+  .table-wrapper { max-height: 600px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+  .status { padding: 40px 20px; text-align: center; font-size: 16px; color: var(--muted); }
+  .error { background: #fee2e2; border: 1px solid #fca5a5; border-radius: 6px; padding: 16px; color: #991b1b; margin: 20px 0; }
+  .paste-form { max-width: 640px; margin: 40px auto; }
+  .paste-form textarea { width: 100%; height: 100px; padding: 10px; border: 1px solid var(--border); border-radius: 6px; font-family: monospace; font-size: 13px; }
+  .paste-form button { background: var(--accent); color: white; border: 0; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 15px; margin-top: 8px; }
+  .paste-form button:hover { background: var(--accent-hover); }
+  footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; text-align: center; }
+  @media print {
+    header { background: white; color: black; border-bottom: 2px solid black; }
+    input[type=search], .paste-form { display: none; }
+    .table-wrapper { max-height: none; overflow: visible; }
+    th { position: static; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="container">
+    <h1 id="patient-title">SMART Health Link Viewer</h1>
+    <div class="subtitle" id="subtitle">Loading…</div>
+  </div>
+</header>
+<div class="container" id="content">
+  <div class="status" id="status">Loading SMART Health Link…</div>
+</div>
+<script>
+"use strict";
+
+// ---------- Base64url helpers ----------
+function b64uToBytes(s) {
+  const pad = s.length % 4 === 0 ? "" : "=".repeat(4 - (s.length % 4));
+  const b64 = (s + pad).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(b64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+function bytesToUtf8(bytes) { return new TextDecoder().decode(bytes); }
+
+// ---------- JWE compact decryption (alg=dir, enc=A256GCM) ----------
+async function decryptJwe(token, keyBytes) {
+  const parts = token.split(".");
+  if (parts.length !== 5) throw new Error("Not a compact JWE (need 5 parts, got " + parts.length + ")");
+  const [protectedHeader, /* encKey */, iv, ciphertext, tag] = parts;
+  const cek = await crypto.subtle.importKey("raw", keyBytes, { name: "AES-GCM" }, false, ["decrypt"]);
+  const ivBytes = b64uToBytes(iv);
+  const ctBytes = b64uToBytes(ciphertext);
+  const tagBytes = b64uToBytes(tag);
+  // Concat ciphertext + tag (Web Crypto expects them together)
+  const ctWithTag = new Uint8Array(ctBytes.length + tagBytes.length);
+  ctWithTag.set(ctBytes, 0);
+  ctWithTag.set(tagBytes, ctBytes.length);
+  // AAD = ASCII bytes of protectedHeader
+  const aad = new TextEncoder().encode(protectedHeader);
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: ivBytes, additionalData: aad, tagLength: 128 },
+    cek,
+    ctWithTag,
+  );
+  return new Uint8Array(plaintext);
+}
+
+// ---------- SHL URI parsing ----------
+function parseShlinkFromUrl() {
+  const hash = location.hash.slice(1);
+  const m = hash.match(/shlink:\/([A-Za-z0-9_-]+)/);
+  if (!m) return null;
+  return m[1];
+}
+function decodePayload(encoded) {
+  try { return JSON.parse(bytesToUtf8(b64uToBytes(encoded))); }
+  catch (e) { throw new Error("Invalid SHL payload: " + e.message); }
+}
+
+// ---------- Rendering helpers ----------
+function esc(s) {
+  return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+function fmtSize(n) {
+  if (!n) return "";
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1024 / 1024).toFixed(1) + " MB";
+}
+
+function extractPatientTitle(bundle) {
+  const patient = (bundle.entry || []).find(e => e.resource?.resourceType === "Patient")?.resource;
+  const nm = patient?.name?.[0];
+  const name = nm ? ((nm.given || []).join(" ") + " " + (nm.family || "")).trim() : "Patient";
+  const dob = patient?.birthDate || "";
+  const gender = patient?.gender || "";
+  return { name, dob, gender };
+}
+
+function extractSections(bundle) {
+  const entries = bundle.entry || [];
+  const byType = t => entries.filter(e => e.resource?.resourceType === t).map(e => e.resource);
+
+  const conditions = byType("Condition").map(r => ({
+    text: r.code?.text || r.code?.coding?.[0]?.display || "Unknown",
+    onset: (r.onsetDateTime || "").slice(0, 10),
+  }));
+  const medications = byType("MedicationStatement").map(r => ({
+    text: r.medicationCodeableConcept?.text || r.medicationCodeableConcept?.coding?.[0]?.display || "Unknown",
+    status: r.status,
+  }));
+  const allergies = byType("AllergyIntolerance").map(r => ({
+    text: r.code?.text || r.code?.coding?.[0]?.display || "Unknown",
+  }));
+  const procedures = byType("Procedure").map(r => ({
+    text: r.code?.text || r.code?.coding?.[0]?.display || "Unknown",
+    date: (r.performedDateTime || "").slice(0, 10),
+  })).sort((a, b) => b.date.localeCompare(a.date));
+  const immunizations = byType("Immunization").map(r => ({
+    text: r.vaccineCode?.text || r.vaccineCode?.coding?.[0]?.display || "Unknown",
+    date: (r.occurrenceDateTime || "").slice(0, 10),
+  })).sort((a, b) => b.date.localeCompare(a.date));
+  const observations = byType("Observation").map(r => {
+    let value = "";
+    if (r.valueQuantity) value = (r.valueQuantity.value ?? "") + " " + (r.valueQuantity.unit || "");
+    else if (r.valueString) value = r.valueString;
+    else if (r.valueCodeableConcept) value = r.valueCodeableConcept.text || r.valueCodeableConcept.coding?.[0]?.display || "";
+    return {
+      text: r.code?.text || r.code?.coding?.[0]?.display || "Observation",
+      value: value.trim(),
+      date: (r.effectiveDateTime || "").slice(0, 10),
+    };
+  }).sort((a, b) => b.date.localeCompare(a.date));
+
+  const documents = [];
+  for (const e of entries) {
+    const dr = e.resource;
+    if (dr?.resourceType !== "DocumentReference") continue;
+    for (const c of dr.content || []) {
+      const a = c.attachment;
+      if (!a) continue;
+      documents.push({
+        title: a.title || dr.description || "Untitled document",
+        description: dr.description || "",
+        date: (dr.date || "").slice(0, 10),
+        contentType: a.contentType || "application/pdf",
+        size: a.size || 0,
+        url: a.url || null,
+        data: a.data || null,
+        typeCode: dr.type?.coding?.[0]?.display || dr.type?.text || "",
+      });
+    }
+  }
+  documents.sort((a, b) => b.date.localeCompare(a.date));
+
+  return { conditions, medications, allergies, procedures, immunizations, observations, documents };
+}
+
+function docHref(d) {
+  if (d.url) return d.url;
+  if (d.data) return "data:" + (d.contentType || "application/pdf") + ";base64," + d.data;
+  return "#";
+}
+
+function renderBundle(bundle, label) {
+  const { name, dob, gender } = extractPatientTitle(bundle);
+  document.getElementById("patient-title").textContent = name;
+  const parts = [];
+  if (dob) parts.push("DOB " + dob);
+  if (gender) parts.push(gender);
+  parts.push(bundle.entry?.length + " FHIR resources");
+  if (label) parts.push(label);
+  document.getElementById("subtitle").textContent = parts.join("  ·  ");
+
+  const s = extractSections(bundle);
+
+  const html = `
+    <div class="grid">
+      <div class="card">
+        <h2>Problem List (${s.conditions.length})</h2>
+        ${s.conditions.length ? "<ul>" + s.conditions.map(c => "<li>" + esc(c.text) + (c.onset ? ' <span class="muted">(onset ' + esc(c.onset) + ")</span>" : "") + "</li>").join("") + "</ul>" : '<p class="muted">None recorded.</p>'}
+      </div>
+      <div class="card">
+        <h2>Medications (${s.medications.length})</h2>
+        ${s.medications.length ? "<ul>" + s.medications.map(m => "<li>" + esc(m.text) + "</li>").join("") + "</ul>" : '<p class="muted">None recorded.</p>'}
+      </div>
+      <div class="card">
+        <h2>Allergies (${s.allergies.length})</h2>
+        ${s.allergies.length ? "<ul>" + s.allergies.map(a => "<li>" + esc(a.text) + "</li>").join("") + "</ul>" : '<p class="muted">None recorded.</p>'}
+      </div>
+      <div class="card">
+        <h2>Immunizations (${s.immunizations.length})</h2>
+        ${s.immunizations.length ? "<ul>" + s.immunizations.slice(0, 30).map(i => "<li>" + esc(i.text) + (i.date ? ' <span class="muted">(' + esc(i.date) + ")</span>" : "") + "</li>").join("") + "</ul>" : '<p class="muted">None recorded.</p>'}
+      </div>
+    </div>
+
+    ${s.procedures.length ? `
+    <div class="card">
+      <h2>Procedures (${s.procedures.length})</h2>
+      <ul style="columns: 2; column-gap: 32px;">${s.procedures.slice(0, 60).map(p => "<li>" + esc(p.text) + (p.date ? ' <span class="muted">(' + esc(p.date) + ")</span>" : "") + "</li>").join("")}</ul>
+      ${s.procedures.length > 60 ? '<p class="muted">... and ' + (s.procedures.length - 60) + " more</p>" : ""}
+    </div>` : ""}
+
+    ${s.observations.length ? `
+    <div class="card">
+      <h2>Recent Observations (${s.observations.length})</h2>
+      <div class="table-wrapper" style="max-height: 300px;">
+        <table>
+          <thead><tr><th>Date</th><th>Observation</th><th>Value</th></tr></thead>
+          <tbody>${s.observations.slice(0, 100).map(o => "<tr><td>" + esc(o.date) + "</td><td>" + esc(o.text) + "</td><td>" + esc(o.value) + "</td></tr>").join("")}</tbody>
+        </table>
+      </div>
+      ${s.observations.length > 100 ? '<p class="muted">Showing 100 of ' + s.observations.length + ".</p>" : ""}
+    </div>` : ""}
+
+    ${s.documents.length ? `
+    <div class="card">
+      <h2>Source Documents (${s.documents.length})</h2>
+      <input type="search" id="doc-search" placeholder="Filter by title, description, date, or type..." aria-label="Search documents">
+      <div class="doc-count" id="doc-count">Showing ${s.documents.length} of ${s.documents.length} documents</div>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr><th>Date</th><th>Document</th><th>Type</th><th>Size</th></tr>
+          </thead>
+          <tbody id="doc-tbody">
+            ${s.documents.map(d => `<tr data-search="${esc((d.title + " " + d.description + " " + d.date + " " + d.typeCode).toLowerCase())}">
+              <td>${esc(d.date)}</td>
+              <td><a href="${esc(docHref(d))}" target="_blank" rel="noopener">${esc(d.title)}</a>${d.description && d.description !== d.title ? '<br><span class="muted">' + esc(d.description) + "</span>" : ""}</td>
+              <td>${esc(d.typeCode)}</td>
+              <td>${esc(fmtSize(d.size))}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>` : ""}
+
+    <footer>
+      Rendered by KTC SHL Viewer.
+      ${bundle.entry.length} FHIR resources, ${s.documents.length} documents.
+    </footer>
+  `;
+  document.getElementById("content").innerHTML = html;
+
+  // Live search filter
+  const search = document.getElementById("doc-search");
+  const tbody = document.getElementById("doc-tbody");
+  const count = document.getElementById("doc-count");
+  if (search && tbody && count) {
+    const rows = Array.from(tbody.querySelectorAll("tr"));
+    const total = rows.length;
+    search.addEventListener("input", () => {
+      const q = search.value.toLowerCase().trim();
+      let visible = 0;
+      for (const r of rows) {
+        const match = !q || r.dataset.search.includes(q);
+        r.style.display = match ? "" : "none";
+        if (match) visible++;
+      }
+      count.textContent = "Showing " + visible + " of " + total + " documents";
+    });
+  }
+}
+
+function showError(msg) {
+  document.getElementById("status").innerHTML = '<div class="error"><strong>Unable to open this SMART Health Link.</strong><br>' + esc(msg) + "</div>";
+}
+function showPasteForm() {
+  document.getElementById("content").innerHTML = `
+    <div class="paste-form">
+      <h2>Paste a SMART Health Link</h2>
+      <p class="muted">This viewer opens shlink:/… URIs. Paste one below.</p>
+      <textarea id="shl-input" placeholder="shlink:/eyJ1cmwi..."></textarea>
+      <button id="shl-open">Open</button>
+    </div>
+  `;
+  document.getElementById("shl-open").addEventListener("click", () => {
+    const val = document.getElementById("shl-input").value.trim();
+    const m = val.match(/shlink:\/([A-Za-z0-9_-]+)/);
+    if (!m) { alert("Not a valid SMART Health Link URI"); return; }
+    location.hash = "#shlink:/" + m[1];
+    location.reload();
+  });
+}
+
+// ---------- Main ----------
+(async function() {
+  try {
+    const encoded = parseShlinkFromUrl();
+    if (!encoded) { showPasteForm(); document.getElementById("status")?.remove(); return; }
+    document.getElementById("status").textContent = "Decoding SHL payload…";
+    const payload = decodePayload(encoded);
+    if (!payload.url || !payload.key) throw new Error("SHL payload missing url or key");
+
+    document.getElementById("status").textContent = "Fetching encrypted bundle…";
+    const jweResp = await fetch(payload.url + (payload.url.includes("?") ? "&" : "?") + "recipient=KTC%20SHL%20Viewer", { cache: "no-store" });
+    if (!jweResp.ok) throw new Error("Failed to fetch bundle: HTTP " + jweResp.status);
+    const jweText = await jweResp.text();
+
+    document.getElementById("status").textContent = "Decrypting…";
+    const keyBytes = b64uToBytes(payload.key);
+    const plaintext = await decryptJwe(jweText.trim(), keyBytes);
+    const bundle = JSON.parse(bytesToUtf8(plaintext));
+
+    renderBundle(bundle, payload.label || "");
+  } catch (e) {
+    console.error(e);
+    showError(e.message);
+  }
+})();
+</script>
+</body>
+</html>
