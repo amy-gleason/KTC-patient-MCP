@@ -214,25 +214,26 @@ function renderBundle(bundle, label) {
 
   const s = extractSections(bundle);
 
+  const cards = [];
+  if (s.conditions.length) cards.push(`<div class="card">
+    <h2>Problem List (${s.conditions.length})</h2>
+    <ul>${s.conditions.map(c => "<li>" + esc(c.text) + (c.onset ? ' <span class="muted">(onset ' + esc(c.onset) + ")</span>" : "") + "</li>").join("")}</ul>
+  </div>`);
+  if (s.medications.length) cards.push(`<div class="card">
+    <h2>Medications (${s.medications.length})</h2>
+    <ul>${s.medications.map(m => "<li>" + esc(m.text) + "</li>").join("")}</ul>
+  </div>`);
+  if (s.allergies.length) cards.push(`<div class="card">
+    <h2>Allergies (${s.allergies.length})</h2>
+    <ul>${s.allergies.map(a => "<li>" + esc(a.text) + "</li>").join("")}</ul>
+  </div>`);
+  if (s.immunizations.length >= 2) cards.push(`<div class="card">
+    <h2>Immunizations (${s.immunizations.length})</h2>
+    <ul>${s.immunizations.slice(0, 30).map(i => "<li>" + esc(i.text) + (i.date ? ' <span class="muted">(' + esc(i.date) + ")</span>" : "") + "</li>").join("")}</ul>
+  </div>`);
+
   const html = `
-    <div class="grid">
-      <div class="card">
-        <h2>Problem List (${s.conditions.length})</h2>
-        ${s.conditions.length ? "<ul>" + s.conditions.map(c => "<li>" + esc(c.text) + (c.onset ? ' <span class="muted">(onset ' + esc(c.onset) + ")</span>" : "") + "</li>").join("") + "</ul>" : '<p class="muted">None recorded.</p>'}
-      </div>
-      <div class="card">
-        <h2>Medications (${s.medications.length})</h2>
-        ${s.medications.length ? "<ul>" + s.medications.map(m => "<li>" + esc(m.text) + "</li>").join("") + "</ul>" : '<p class="muted">None recorded.</p>'}
-      </div>
-      <div class="card">
-        <h2>Allergies (${s.allergies.length})</h2>
-        ${s.allergies.length ? "<ul>" + s.allergies.map(a => "<li>" + esc(a.text) + "</li>").join("") + "</ul>" : '<p class="muted">None recorded.</p>'}
-      </div>
-      <div class="card">
-        <h2>Immunizations (${s.immunizations.length})</h2>
-        ${s.immunizations.length ? "<ul>" + s.immunizations.slice(0, 30).map(i => "<li>" + esc(i.text) + (i.date ? ' <span class="muted">(' + esc(i.date) + ")</span>" : "") + "</li>").join("") + "</ul>" : '<p class="muted">None recorded.</p>'}
-      </div>
-    </div>
+    ${cards.length ? '<div class="grid">' + cards.join("") + "</div>" : ""}
 
     ${s.procedures.length ? `
     <div class="card">

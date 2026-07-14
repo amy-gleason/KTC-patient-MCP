@@ -282,27 +282,26 @@ const html = `<!doctype html>
     Full FHIR bundle available at <a href="./file.jwe">file.jwe</a> (SHL-encrypted).
   </div>
 
-  <div class="grid">
-    <div class="card">
+  ${(() => {
+    const cards = [];
+    if (conditions.length) cards.push(`<div class="card">
       <h2>Problem List (${conditions.length})</h2>
-      ${conditions.length ? `<ul>${conditions.map(c => `<li>${esc(c.text)}${c.onset ? ` <span class="muted">(onset ${esc(c.onset)})</span>` : ""}</li>`).join("")}</ul>` : `<p class="muted">No conditions recorded.</p>`}
-    </div>
-
-    <div class="card">
+      <ul>${conditions.map(c => `<li>${esc(c.text)}${c.onset ? ` <span class="muted">(onset ${esc(c.onset)})</span>` : ""}</li>`).join("")}</ul>
+    </div>`);
+    if (medications.length) cards.push(`<div class="card">
       <h2>Medications (${medications.length})</h2>
-      ${medications.length ? `<ul>${medications.map(m => `<li>${esc(m.text)}${m.status && m.status !== "active" ? ` <span class="muted">(${esc(m.status)})</span>` : ""}</li>`).join("")}</ul>` : `<p class="muted">No medications recorded.</p>`}
-    </div>
-
-    <div class="card">
+      <ul>${medications.map(m => `<li>${esc(m.text)}${m.status && m.status !== "active" ? ` <span class="muted">(${esc(m.status)})</span>` : ""}</li>`).join("")}</ul>
+    </div>`);
+    if (allergies.length) cards.push(`<div class="card">
       <h2>Allergies (${allergies.length})</h2>
-      ${allergies.length ? `<ul>${allergies.map(a => `<li>${esc(a.text)}${a.severity ? ` <span class="muted">(${esc(a.severity)})</span>` : ""}</li>`).join("")}</ul>` : `<p class="muted">No known allergies.</p>`}
-    </div>
-
-    <div class="card">
+      <ul>${allergies.map(a => `<li>${esc(a.text)}${a.severity ? ` <span class="muted">(${esc(a.severity)})</span>` : ""}</li>`).join("")}</ul>
+    </div>`);
+    if (immunizations.length >= 2) cards.push(`<div class="card">
       <h2>Immunizations (${immunizations.length})</h2>
-      ${immunizations.length ? `<ul>${immunizations.slice(0, 30).map(i => `<li>${esc(i.text)}${i.date ? ` <span class="muted">(${esc(i.date)})</span>` : ""}</li>`).join("")}${immunizations.length > 30 ? `<li class="muted">... and ${immunizations.length - 30} more</li>` : ""}</ul>` : `<p class="muted">None recorded.</p>`}
-    </div>
-  </div>
+      <ul>${immunizations.slice(0, 30).map(i => `<li>${esc(i.text)}${i.date ? ` <span class="muted">(${esc(i.date)})</span>` : ""}</li>`).join("")}${immunizations.length > 30 ? `<li class="muted">... and ${immunizations.length - 30} more</li>` : ""}</ul>
+    </div>`);
+    return cards.length ? `<div class="grid">${cards.join("")}</div>` : "";
+  })()}
 
   <div class="card">
     <h2>Procedures (${procedures.length})</h2>
