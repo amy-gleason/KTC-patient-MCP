@@ -33,6 +33,12 @@ const PORTAL_PATH =
     homedir(),
     "Documents/GitHub/Morgan-SHl/public/shl/morgan/index.html",
   );
+const SUMMARY_PDF_URL =
+  process.env.MORGAN_SUMMARY_URL ||
+  "./docs/morgan-gleason-clinical-summary-and-timeline.pdf";
+const ZIP_URL =
+  process.env.MORGAN_ZIP_URL ||
+  "https://github.com/amy-gleason/Morgan-SHl/releases/download/morgan-large-docs/morgan-all-documents.zip";
 
 console.log(`Fetching Morgan bundle from ${JWE_URL}...`);
 const res = await fetch(JWE_URL, { cache: "no-store" });
@@ -215,6 +221,63 @@ const html = `<!doctype html>
     margin-bottom: 20px;
     font-size: 14px;
   }
+  .hero {
+    background: linear-gradient(135deg, #0b3d91 0%, #1e40af 100%);
+    color: white;
+    border-radius: 12px;
+    padding: 32px;
+    margin-bottom: 24px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  }
+  .hero h2 {
+    color: white;
+    border: none;
+    padding: 0;
+    margin: 0 0 8px 0;
+    font-size: 24px;
+  }
+  .hero p {
+    margin: 0 0 20px 0;
+    opacity: 0.95;
+    font-size: 16px;
+  }
+  .hero-actions {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .hero-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: white;
+    color: var(--accent);
+    padding: 14px 24px;
+    border-radius: 8px;
+    font-weight: 600;
+    text-decoration: none;
+    font-size: 15px;
+    transition: transform 0.1s;
+  }
+  .hero-btn:hover {
+    transform: translateY(-1px);
+    text-decoration: none;
+    color: var(--accent-hover);
+  }
+  .hero-btn.secondary {
+    background: transparent;
+    color: white;
+    border: 2px solid rgba(255,255,255,0.6);
+  }
+  .hero-btn.secondary:hover {
+    background: rgba(255,255,255,0.1);
+    color: white;
+    border-color: white;
+  }
+  .hero-btn-icon {
+    font-size: 18px;
+    line-height: 1;
+  }
   table {
     width: 100%;
     border-collapse: collapse;
@@ -275,11 +338,25 @@ const html = `<!doctype html>
 </header>
 
 <div class="container">
+  <div class="hero">
+    <h2>Complete Medical Summary and Timeline</h2>
+    <p>For a full narrative summary of ${esc(patientName.split(" ")[0] || "the patient")}'s care — history, current regimen, active issues, and a reverse-chronological timeline — start here.</p>
+    <div class="hero-actions">
+      <a href="${esc(SUMMARY_PDF_URL)}" target="_blank" rel="noopener" class="hero-btn">
+        <span class="hero-btn-icon">📄</span>
+        Open Clinical Summary &amp; Timeline (PDF)
+      </a>
+      <a href="${esc(ZIP_URL)}" class="hero-btn secondary" download>
+        <span class="hero-btn-icon">⬇</span>
+        Download All ${documents.length} Documents (ZIP)
+      </a>
+    </div>
+  </div>
+
   <div class="warning">
-    <strong>For clinicians:</strong> This is a patient-authored health record.
-    All source documents are hosted below with direct links. Structured data
-    (problems, meds, allergies) is summarized in the sections below.
-    Full FHIR bundle available at <a href="./file.jwe">file.jwe</a> (SHL-encrypted).
+    <strong>For clinicians:</strong> Structured data (problems, meds, allergies)
+    is below. Every source document is linked in the table at the bottom.
+    Full FHIR bundle: <a href="./file.jwe">file.jwe</a> (SHL-encrypted).
   </div>
 
   ${(() => {

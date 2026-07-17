@@ -45,6 +45,15 @@
   .table-wrapper { max-height: 600px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
   .status { padding: 40px 20px; text-align: center; font-size: 16px; color: var(--muted); }
   .error { background: #fee2e2; border: 1px solid #fca5a5; border-radius: 6px; padding: 16px; color: #991b1b; margin: 20px 0; }
+  .hero { background: linear-gradient(135deg, #0b3d91 0%, #1e40af 100%); color: white; border-radius: 12px; padding: 32px; margin-bottom: 24px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+  .hero h2 { color: white; border: none; padding: 0; margin: 0 0 8px 0; font-size: 24px; }
+  .hero p { margin: 0 0 20px 0; opacity: 0.95; font-size: 16px; }
+  .hero-actions { display: flex; gap: 12px; flex-wrap: wrap; }
+  .hero-btn { display: inline-flex; align-items: center; gap: 8px; background: white; color: var(--accent); padding: 14px 24px; border-radius: 8px; font-weight: 600; text-decoration: none; font-size: 15px; transition: transform 0.1s; }
+  .hero-btn:hover { transform: translateY(-1px); color: var(--accent-hover); text-decoration: none; }
+  .hero-btn.secondary { background: transparent; color: white; border: 2px solid rgba(255,255,255,0.6); }
+  .hero-btn.secondary:hover { background: rgba(255,255,255,0.1); color: white; border-color: white; }
+  .hero-btn-icon { font-size: 18px; line-height: 1; }
   .paste-form { max-width: 640px; margin: 40px auto; }
   .paste-form textarea { width: 100%; height: 100px; padding: 10px; border: 1px solid var(--border); border-radius: 6px; font-family: monospace; font-size: 13px; }
   .paste-form button { background: var(--accent); color: white; border: 0; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 15px; margin-top: 8px; }
@@ -202,6 +211,18 @@ function docHref(d) {
   return "#";
 }
 
+// Look up the clinical summary doc, if present
+function findSummaryDoc(documents) {
+  const keywords = ["clinical-summary", "clinical_summary", "clinical summary and timeline"];
+  return documents.find(d => {
+    const s = ((d.title || "") + " " + (d.description || "")).toLowerCase();
+    return keywords.some(k => s.includes(k));
+  });
+}
+
+// ZIP URL for "Download all documents" (published from GitHub Release)
+const ALL_DOCS_ZIP_URL = "https://github.com/amy-gleason/Morgan-SHl/releases/download/morgan-large-docs/morgan-all-documents.zip";
+
 function renderBundle(bundle, label) {
   const { name, dob, gender } = extractPatientTitle(bundle);
   document.getElementById("patient-title").textContent = name;
@@ -232,7 +253,27 @@ function renderBundle(bundle, label) {
     <ul>${s.immunizations.slice(0, 30).map(i => "<li>" + esc(i.text) + (i.date ? ' <span class="muted">(' + esc(i.date) + ")</span>" : "") + "</li>").join("")}</ul>
   </div>`);
 
+  const firstName = (name || "").split(" ")[0] || "the patient";
+  const summaryDoc = findSummaryDoc(s.documents);
+  const heroHtml = `
+    <div class="hero">
+      <h2>Complete Medical Summary and Timeline</h2>
+      <p>For a full narrative summary of ${esc(firstName)}'s care — history, current regimen, active issues, and a reverse-chronological timeline — start here.</p>
+      <div class="hero-actions">
+        ${summaryDoc ? `<a href="${esc(docHref(summaryDoc))}" target="_blank" rel="noopener" class="hero-btn">
+          <span class="hero-btn-icon">📄</span>
+          Open Clinical Summary &amp; Timeline (PDF)
+        </a>` : ""}
+        <a href="${esc(ALL_DOCS_ZIP_URL)}" class="hero-btn secondary" download>
+          <span class="hero-btn-icon">⬇</span>
+          Download All ${s.documents.length} Documents (ZIP)
+        </a>
+      </div>
+    </div>
+  `;
+
   const html = `
+    ${heroHtml}
     ${cards.length ? '<div class="grid">' + cards.join("") + "</div>" : ""}
 
     ${s.procedures.length ? `
