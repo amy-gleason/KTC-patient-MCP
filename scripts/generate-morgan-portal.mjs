@@ -118,10 +118,16 @@ for (const e of bundle.entry ?? []) {
   for (const c of dr.content ?? []) {
     const a = c.attachment;
     if (!a?.url) continue;
+    const period = dr.context?.period;
+    const dateSort = (dr.date || period?.end || "").slice(0, 10);
+    const dateDisplay = period && period.start && period.end
+      ? `${period.start.slice(0, 4)}–${period.end.slice(0, 4)}`
+      : dateSort;
     documents.push({
-      title: a.title || dr.description || "Untitled document",
-      description: dr.description || "",
-      date: (dr.date || "").slice(0, 10),
+      title: dr.description || a.title || "Untitled document",
+      subtitle: (dr.description && a.title && dr.description !== a.title) ? a.title : "",
+      dateDisplay,
+      dateSort,
       contentType: a.contentType || "application/pdf",
       size: a.size || 0,
       url: a.url,
@@ -129,7 +135,7 @@ for (const e of bundle.entry ?? []) {
     });
   }
 }
-documents.sort((a, b) => b.date.localeCompare(a.date));
+documents.sort((a, b) => b.dateSort.localeCompare(a.dateSort));
 
 console.log(`Extracted: ${conditions.length} conditions, ${medications.length} meds, ${allergies.length} allergies, ${procedures.length} procedures, ${observations.length} observations, ${documents.length} documents`);
 
@@ -413,9 +419,9 @@ const html = `<!doctype html>
           </tr>
         </thead>
         <tbody id="doc-tbody">
-          ${documents.map(d => `<tr data-search="${esc((d.title + " " + d.description + " " + d.date + " " + d.typeCode).toLowerCase())}">
-            <td>${esc(d.date)}</td>
-            <td><a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.title)}</a>${d.description && d.description !== d.title ? `<br><span class="muted">${esc(d.description)}</span>` : ""}</td>
+          ${documents.map(d => `<tr data-search="${esc((d.title + " " + (d.subtitle || "") + " " + d.dateDisplay + " " + d.typeCode).toLowerCase())}">
+            <td>${esc(d.dateDisplay)}</td>
+            <td><a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.title)}</a>${d.subtitle ? `<br><span class="muted">${esc(d.subtitle)}</span>` : ""}</td>
             <td>${esc(d.typeCode)}</td>
             <td>${esc(fmtSize(d.size))}</td>
           </tr>`).join("")}
