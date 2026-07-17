@@ -124,8 +124,8 @@ for (const e of bundle.entry ?? []) {
       ? `${period.start.slice(0, 4)}–${period.end.slice(0, 4)}`
       : dateSort;
     documents.push({
-      title: dr.description || a.title || "Untitled document",
-      subtitle: (dr.description && a.title && dr.description !== a.title) ? a.title : "",
+      title: a.title || dr.description || "Untitled document",
+      subtitle: (dr.description && a.title && dr.description !== a.title) ? dr.description : "",
       dateDisplay,
       dateSort,
       contentType: a.contentType || "application/pdf",
