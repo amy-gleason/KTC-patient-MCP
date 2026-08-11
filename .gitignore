@@ -7,3 +7,6 @@ coverage/
 npm-debug.log*
 .DS_Store
 certs/
+
+# Cruise companion local secrets
+cruise-companion/config.js
